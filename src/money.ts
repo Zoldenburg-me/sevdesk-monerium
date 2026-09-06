@@ -30,3 +30,32 @@ export function formatCents(cents: bigint): string {
 export function centsToNumber(cents: bigint): number {
   return Number(cents) / 100;
 }
+
+/**
+ * Raw token units (18 decimals for EURe) to cents. Bank books hold cents,
+ * so a sub-cent on-chain amount is rounded half-up and the exact figure is
+ * returned beside it for the purpose text — the rounding is shown, not
+ * hidden, and the drift check tolerates it.
+ */
+export function unitsToCents(value: bigint, decimals: number): { cents: bigint; exact: string; rounded: boolean } {
+  const base = 10n ** BigInt(decimals);
+  const whole = value / base;
+  const frac = value % base;
+  const fracStr = frac.toString().padStart(decimals, "0").replace(/0+$/, "");
+  const exact = fracStr ? `${whole}.${fracStr}` : `${whole}`;
+  if (decimals <= 2) return { cents: value * 10n ** BigInt(2 - decimals), exact, rounded: false };
+  const scale = 10n ** BigInt(decimals - 2);
+  const centsFloor = value / scale;
+  const remainder = value % scale;
+  const roundedUp = remainder * 2n >= scale ? centsFloor + 1n : centsFloor;
+  return { cents: roundedUp, exact, rounded: remainder !== 0n };
+}
+
+/** A decimal string with any precision, rounded half-up to cents. */
+export function roundToCents(amount: string): bigint {
+  const m = /^(-?)(\d+)(?:\.(\d+))?$/.exec(amount.trim());
+  if (!m) throw new Error(`not a decimal amount: "${amount}"`);
+  const [, sign, whole, frac = ""] = m;
+  const { cents } = unitsToCents(BigInt(whole + frac), frac.length);
+  return sign === "-" ? -cents : cents;
+}

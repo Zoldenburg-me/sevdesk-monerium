@@ -105,7 +105,7 @@ test("plan without --create-accounts writes nothing and names the missing accoun
   assert.equal(plan.accounts[0].checkAccountId, null);
   assert.equal(plan.accounts[0].create, false);
   assert.ok(plan.actions.every((a) => a.kind === "skip"));
-  const skip = plan.actions.find((a) => a.orderId === "o-issue");
+  const skip = plan.actions.find((a) => a.id === "o-issue");
   assert.ok(skip?.kind === "skip" && skip.reason.includes(IBAN) && skip.reason.includes("--create-accounts"));
   assert.equal(sev.requests.filter((r) => r.method === "POST").length, 0, "a plan must not POST");
 });
@@ -115,7 +115,7 @@ test("apply creates the file-import account and one line per processed order; pe
   const plan = await planSync(deps(state), { createAccounts: true });
   assert.equal(plan.accounts[0].create, true);
   assert.deepEqual(
-    plan.actions.map((a) => [a.orderId, a.kind]),
+    plan.actions.map((a) => [a.id, a.kind]),
     [["o-issue", "create"], ["o-redeem", "create"], ["o-pending", "skip"], ["o-rejected", "skip"]],
   );
   const report = await applySync(deps(state), plan);
@@ -203,7 +203,7 @@ test("a failed create mid-run keeps what landed and the retry creates only the r
   assert.ok(!state.data.orders["o-redeem"]);
 
   const retry = await planSync(deps(state));
-  assert.deepEqual(retry.actions.map((a) => [a.orderId, a.kind]), [["o-issue", "already"], ["o-redeem", "create"], ["o-pending", "skip"], ["o-rejected", "skip"]]);
+  assert.deepEqual(retry.actions.map((a) => [a.id, a.kind]), [["o-issue", "already"], ["o-redeem", "create"], ["o-pending", "skip"], ["o-rejected", "skip"]]);
   await applySync(deps(state), retry);
   assert.equal(sev.transactions.length, origLength + 2);
 });
@@ -211,13 +211,13 @@ test("a failed create mid-run keeps what landed and the retry creates only the r
 test("orders on an address without an IBAN are skipped and say why", async () => {
   mon.orders.push(order({ id: "o-other", kind: "issue", amount: "5", address: "0x0000000000000000000000000000000000000099" }));
   const plan = await planSync(deps(), { createAccounts: true });
-  const s = plan.actions.find((a) => a.orderId === "o-other");
+  const s = plan.actions.find((a) => a.id === "o-other");
   assert.ok(s?.kind === "skip" && /no Monerium IBAN/.test(s.reason));
 });
 
 test("--since / --until bound the window by processedAt", async () => {
   const plan = await planSync(deps(), { createAccounts: true, since: new Date("2026-09-02T00:00:00Z"), until: new Date("2026-09-03T00:00:00Z") });
-  assert.deepEqual(plan.actions.map((a) => a.orderId), ["o-redeem"]);
+  assert.deepEqual(plan.actions.map((a) => a.id), ["o-redeem"]);
 });
 
 test("drift: agreement after a full sync, a delta when EURe moved without an order", async () => {
@@ -232,7 +232,7 @@ test("drift: agreement after a full sync, a delta when EURe moved without an ord
   mon.balances[`gnosis:${ADDRESS.toLowerCase()}`] = "1000.00"; // 34.56 EURe sent on-chain, no order
   lines = await checkDrift(deps(state));
   assert.equal(lines[0].deltaCents, -3456n);
-  assert.match(lines[0].note, /on-chain EURe transfers/);
+  assert.match(lines[0].note, /unmirrored movements/);
   assert.equal(sev.transactions.length, 2, "drift is reported, never repaired");
 });
 

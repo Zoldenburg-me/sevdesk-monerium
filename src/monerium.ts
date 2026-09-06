@@ -72,6 +72,17 @@ export interface MoneriumIban {
   chain: string;
 }
 
+/** One entry of GET /tokens: which contract Monerium issues for a currency on a chain. */
+export interface MoneriumToken {
+  kind: string;
+  address: string;
+  decimals: number;
+  chain: string;
+  chainId: number;
+  currency: string;
+  symbol: string;
+}
+
 export interface OrdersQuery {
   profile?: string;
   address?: string;
@@ -153,6 +164,22 @@ export class MoneriumClient {
   async orders(q: OrdersQuery = {}): Promise<MoneriumOrder[]> {
     const res = await this.get<{ orders: MoneriumOrder[] } | MoneriumOrder[]>("/orders", { ...q });
     return Array.isArray(res) ? res : (res.orders ?? []);
+  }
+
+  /**
+   * The contracts Monerium issues, read from Monerium rather than hardcoded:
+   * the EURe address differs per chain and a wrong one is invisible (every
+   * range of logs comes back empty and the mirror looks complete).
+   */
+  async tokens(): Promise<MoneriumToken[]> {
+    const raw = await this.get<any[]>("/tokens");
+    return (Array.isArray(raw) ? raw : [])
+      .filter((t) => t?.kind === "evm" && t?.address)
+      .map((t) => ({ kind: "evm", address: String(t.address).toLowerCase(), decimals: Number(t.decimals), chain: String(t.chain), chainId: Number(t.chainId), currency: String(t.currency), symbol: String(t.symbol) }));
+  }
+
+  async eureToken(chain: string): Promise<MoneriumToken | undefined> {
+    return (await this.tokens()).find((t) => t.chain === chain && t.currency === "eur");
   }
 
   /** Token balance of one address on one chain, as Monerium sees it. */

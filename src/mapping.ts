@@ -102,3 +102,44 @@ export function mapOrder(order: MoneriumOrder, checkAccountId: number): MappingR
   };
   return { ok: true, draft, cents: signed, fingerprint: fingerprint({ day: dayOf(valueDate), cents: signed, acctNo, purpose }) };
 }
+
+// ---------------------------------------------------------------------------
+// On-chain transfers
+// ---------------------------------------------------------------------------
+import { unitsToCents } from "./money.js";
+import type { ChainTransfer } from "./chain.js";
+import { ZERO_ADDRESS } from "./chain.js";
+
+export const transferKey = (t: { chain: string; txHash: string; logIndex: number }) => `${t.chain}:${t.txHash.toLowerCase()}:${t.logIndex}`;
+
+/**
+ * A plain EURe transfer between two addresses, as a bank line. Mint and
+ * burn legs (from or to the zero address) are Monerium's settlement of an
+ * order and are never mapped here: the order carries the bank counterparty
+ * and is the better record, and mapping both would book one payment twice.
+ * The caller decides what to do with a mint/burn that matches no order.
+ */
+export function mapTransfer(t: ChainTransfer, account: string, decimals: number, checkAccountId: number): MappingResult {
+  const me = account.toLowerCase();
+  if (t.from === ZERO_ADDRESS || t.to === ZERO_ADDRESS) return { ok: false, reason: "mint/burn leg of a Monerium order" };
+  if (t.from !== me && t.to !== me) return { ok: false, reason: "does not touch the account" };
+  if (t.value <= 0n) return { ok: false, reason: "zero-value transfer" };
+  const { cents, exact, rounded } = unitsToCents(t.value, decimals);
+  if (cents === 0n) return { ok: false, reason: `dust: ${exact} EURe rounds to zero cents` };
+  const incoming = t.to === me;
+  const signed = incoming ? cents : -cents;
+  const other = incoming ? t.from : t.to;
+  const acctNo = `${t.chain}:${other}`;
+  const purpose = `EURe on-chain transfer ${t.txHash}${rounded ? ` (exact ${exact} EURe)` : ""}`;
+  const draft: SevdeskTransactionCreate = {
+    valueDate: t.at,
+    entryDate: t.at,
+    amount: centsToNumber(signed),
+    payeePayerName: `${t.chain} ${other}`,
+    payeePayerAcctNo: acctNo,
+    paymtPurpose: purpose,
+    checkAccount: { id: checkAccountId, objectName: "CheckAccount" },
+    status: 100,
+  };
+  return { ok: true, draft, cents: signed, fingerprint: fingerprint({ day: dayOf(t.at), cents: signed, acctNo, purpose }) };
+}

@@ -12,10 +12,21 @@ export interface SyncStateData {
   /** IBAN (normalized) -> sevDesk CheckAccount id. */
   accounts: Record<string, { checkAccountId: string; createdByUs?: boolean }>;
   /** Monerium order id -> the sevDesk row that mirrors it. */
-  orders: Record<string, { transactionId: string; fingerprint: string; syncedAt: string; adopted?: boolean }>;
+  orders: Record<string, MirroredRow>;
+  /** `chain:txHash:logIndex` of an on-chain transfer -> the sevDesk row that mirrors it. */
+  transfers: Record<string, MirroredRow>;
+  /** `chain:address` -> the last block whose transfers have been mirrored. */
+  cursors: Record<string, { lastScannedBlock: number }>;
 }
 
-const empty = (): SyncStateData => ({ version: 1, accounts: {}, orders: {} });
+export interface MirroredRow {
+  transactionId: string;
+  fingerprint: string;
+  syncedAt: string;
+  adopted?: boolean;
+}
+
+const empty = (): SyncStateData => ({ version: 1, accounts: {}, orders: {}, transfers: {}, cursors: {} });
 
 export class SyncState {
   data: SyncStateData;

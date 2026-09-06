@@ -29,13 +29,14 @@ export interface MoneriumStub {
   url: string;
   ibans: MoneriumIban[];
   orders: MoneriumOrder[];
+  tokens: unknown[];
   balances: Record<string, string>; // `${chain}:${address.toLowerCase()}` -> eur amount
   tokenGrants: number;
   close(): Promise<void>;
 }
 
 export async function startMoneriumStub(creds: { clientId: string; clientSecret: string }): Promise<MoneriumStub> {
-  const stub: MoneriumStub = { url: "", ibans: [], orders: [], balances: {}, tokenGrants: 0, close: async () => {} };
+  const stub: MoneriumStub = { url: "", ibans: [], orders: [], tokens: [], balances: {}, tokenGrants: 0, close: async () => {} };
   const token = "stub-access-token";
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
@@ -51,6 +52,7 @@ export async function startMoneriumStub(creds: { clientId: string; clientSecret:
     if (req.headers.accept !== "application/vnd.monerium.api-v2+json") return json(res, 406, { message: "v2 accept header required" });
     if (url.pathname === "/auth/context") return json(res, 200, { userId: "u1", email: "ops@example.test", name: "Example UG", defaultProfile: "p1", profiles: [{ id: "p1", kind: "corporate", name: "Example UG" }] });
     if (url.pathname === "/ibans") return json(res, 200, { ibans: stub.ibans });
+    if (url.pathname === "/tokens") return json(res, 200, stub.tokens);
     if (url.pathname === "/orders") {
       const state = url.searchParams.get("state");
       const address = url.searchParams.get("address");
@@ -150,4 +152,88 @@ export function order(o: Partial<MoneriumOrder> & { id: string; kind: MoneriumOr
     meta: { placedAt: "2026-09-01T09:00:00Z", processedAt: "2026-09-01T10:15:00Z" },
     ...o,
   };
+}
+
+// ---------------------------------------------------------------------------
+// JSON-RPC stub: a chain with one block every 5 seconds from `genesisTime`,
+// a Transfer log store, and an eth_getLogs range cap that answers the way
+// public nodes do (an error mentioning the range), so the halving path runs.
+// ---------------------------------------------------------------------------
+export interface RpcLogFixture {
+  token: string;
+  from: string;
+  to: string;
+  value: bigint;
+  blockNumber: number;
+  txHash: string;
+  logIndex: number;
+}
+
+export interface RpcStub {
+  url: string;
+  chainId: number;
+  head: number;
+  genesisTime: number; // seconds
+  blockSeconds: number;
+  logs: RpcLogFixture[];
+  maxRange: number;
+  balances: Record<string, bigint>; // `${token}:${owner}` lowercase
+  calls: { method: string; params: unknown[] }[];
+  close(): Promise<void>;
+}
+
+const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+const pad = (a: string) => `0x${a.toLowerCase().replace(/^0x/, "").padStart(64, "0")}`;
+
+export async function startRpcStub(init: Partial<RpcStub> = {}): Promise<RpcStub> {
+  const stub: RpcStub = { url: "", chainId: 100, head: 20_000, genesisTime: Date.UTC(2026, 7, 1) / 1000, blockSeconds: 5, logs: [], maxRange: 100_000, balances: {}, calls: [], close: async () => {}, ...init };
+  const server = createServer(async (req, res) => {
+    const { id, method, params = [] } = JSON.parse(await body(req)) as { id: number; method: string; params?: unknown[] };
+    stub.calls.push({ method, params });
+    const reply = (result: unknown) => json(res, 200, { jsonrpc: "2.0", id, result });
+    const fail = (message: string, code = -32000) => json(res, 200, { jsonrpc: "2.0", id, error: { code, message } });
+    const hex = (n: number) => `0x${n.toString(16)}`;
+    switch (method) {
+      case "eth_chainId":
+        return reply(hex(stub.chainId));
+      case "eth_blockNumber":
+        return reply(hex(stub.head));
+      case "eth_getBlockByNumber": {
+        const tag = params[0] as string;
+        const n = tag === "latest" ? stub.head : Number(tag);
+        if (n > stub.head || n < 0) return reply(null);
+        return reply({ number: hex(n), timestamp: hex(stub.genesisTime + n * stub.blockSeconds), hash: `0x${n.toString(16).padStart(64, "0")}` });
+      }
+      case "eth_call": {
+        const { to, data } = params[0] as { to: string; data: string };
+        if (!data.startsWith("0x70a08231")) return fail("stub: unknown selector");
+        const owner = `0x${data.slice(-40)}`;
+        const bal = stub.balances[`${to.toLowerCase()}:${owner.toLowerCase()}`] ?? 0n;
+        return reply(`0x${bal.toString(16).padStart(64, "0")}`);
+      }
+      case "eth_getLogs": {
+        const f = params[0] as { address: string; topics: (string | null)[]; fromBlock: string; toBlock: string };
+        const from = Number(f.fromBlock);
+        const to = Number(f.toBlock);
+        if (to - from + 1 > stub.maxRange) return fail(`query exceeds max block range ${stub.maxRange}`, -32005);
+        const rows = stub.logs
+          .filter((l) => l.token.toLowerCase() === f.address.toLowerCase() && l.blockNumber >= from && l.blockNumber <= to)
+          .filter((l) => (f.topics[1] == null || pad(l.from) === f.topics[1]) && (f.topics[2] == null || pad(l.to) === f.topics[2]))
+          .map((l) => ({
+            address: l.token,
+            topics: [TRANSFER, pad(l.from), pad(l.to)],
+            data: `0x${l.value.toString(16).padStart(64, "0")}`,
+            blockNumber: hex(l.blockNumber),
+            transactionHash: l.txHash,
+            logIndex: hex(l.logIndex),
+          }));
+        return reply(rows);
+      }
+      default:
+        return fail(`stub: unsupported method ${method}`, -32601);
+    }
+  });
+  stub.url = await listen(server);
+  stub.close = () => new Promise((r) => server.close(() => r()));
+  return stub;
 }

@@ -4,8 +4,9 @@
  *
  *   auth                      verify both credentials, print what each sees
  *   accounts                  Monerium IBANs beside sevDesk check accounts
- *   sync [--since D] [--until D] [--apply] [--create-accounts]
- *                             plan (default) or apply the mirror
+ *   sync [--since D] [--until D] [--apply] [--create-accounts] [--no-chain]
+ *                             plan (default) or apply the mirror; reads
+ *                             Monerium orders AND on-chain EURe transfers
  *   check                     balance drift per IBAN, reported not repaired
  *
  * Writes to sevDesk happen only under `sync --apply`. Nothing ever writes
@@ -65,13 +66,17 @@ function printPlan(plan: SyncPlan) {
     const status = a.checkAccountId ? `sevDesk account ${a.checkAccountId}` : a.create ? `WILL CREATE sevDesk file-import account "${a.name}"` : "NO sevDesk account (orders skipped; use --create-accounts)";
     console.log(`${a.iban}  ${a.chain} ${a.address}  ->  ${status}`);
   }
-  const counts = { create: 0, adopt: 0, already: 0, skip: 0 };
+  for (const a of plan.accounts) {
+    if (a.scan) console.log(`  chain ${a.chain}: blocks ${a.scan.fromBlock}..${a.scan.toBlock} of token ${a.scan.token}${a.scan.note ? ` (${a.scan.note})` : ""}`);
+  }
+  for (const n of plan.notes) console.log(`  note: ${n}`);
+  const counts = { create: 0, adopt: 0, already: 0, covered: 0, skip: 0 };
   for (const a of plan.actions) counts[a.kind]++;
-  console.log(`orders in window: ${plan.ordersSeen}  create: ${counts.create}  adopt: ${counts.adopt}  already: ${counts.already}  skip: ${counts.skip}`);
+  console.log(`orders in window: ${plan.ordersSeen}  on-chain transfers: ${plan.transfersSeen}  create: ${counts.create}  adopt: ${counts.adopt}  already: ${counts.already}  covered-by-order: ${counts.covered}  skip: ${counts.skip}`);
   for (const a of plan.actions) {
-    if (a.kind === "create") console.log(`  + ${a.draft.valueDate.slice(0, 10)}  ${a.draft.amount.toFixed(2).padStart(12)} EUR  ${a.draft.payeePayerName}  "${a.draft.paymtPurpose ?? ""}"  [${a.orderId}]`);
-    else if (a.kind === "adopt") console.log(`  = adopt existing sevDesk row ${a.transactionId}  [${a.orderId}]`);
-    else if (a.kind === "skip") console.log(`  - skip ${a.orderId}: ${a.reason}`);
+    if (a.kind === "create") console.log(`  + ${a.draft.valueDate.slice(0, 10)}  ${a.draft.amount.toFixed(2).padStart(12)} EUR  ${a.draft.payeePayerName}  "${a.draft.paymtPurpose ?? ""}"  [${a.source} ${a.id}]`);
+    else if (a.kind === "adopt") console.log(`  = adopt existing sevDesk row ${a.transactionId}  [${a.source} ${a.id}]`);
+    else if (a.kind === "skip") console.log(`  - skip [${a.source} ${a.id}]: ${a.reason}`);
   }
 }
 
@@ -79,7 +84,7 @@ async function main() {
   loadEnv();
   const { command, flags } = parseArgs(process.argv.slice(2));
   if (!command || flags.help) {
-    console.log("usage: sevdesk-monerium <auth|accounts|sync|check> [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--apply] [--create-accounts] [--profile ID]");
+    console.log("usage: sevdesk-monerium <auth|accounts|sync|check> [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--apply] [--create-accounts] [--no-chain] [--confirmations N] [--profile ID]");
     process.exit(flags.help ? 0 : 2);
   }
 
@@ -120,6 +125,9 @@ async function main() {
         profile,
         createAccounts: flags["create-accounts"] === true,
         accountName: typeof flags["account-name"] === "string" ? flags["account-name"] : undefined,
+        chain: flags["no-chain"] !== true,
+        confirmations: typeof flags.confirmations === "string" ? Number(flags.confirmations) : Number(process.env.CHAIN_CONFIRMATIONS || 12),
+        maxBlockSpan: Number(process.env.CHAIN_MAX_BLOCK_SPAN || 5000),
       });
       printPlan(plan);
       if (flags.apply !== true) {
@@ -127,7 +135,7 @@ async function main() {
         return;
       }
       const report = await applySync(deps, plan);
-      console.log(`applied: ${report.created.length} created, ${report.adopted.length} adopted, ${report.already} already mirrored, ${report.skipped.length} skipped, ${report.accountsCreated.length} account(s) created`);
+      console.log(`applied: ${report.created.length} created, ${report.adopted.length} adopted, ${report.already} already mirrored, ${report.covered} covered by an order, ${report.skipped.length} skipped, ${report.accountsCreated.length} account(s) created`);
       return;
     }
     case "check": {
