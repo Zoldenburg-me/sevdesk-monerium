@@ -78,7 +78,7 @@ test("units: 18-decimal amounts to cents, half-up, exact figure kept", () => {
   assert.deepEqual(unitsToCents(1n, 18), { cents: 0n, exact: "0.000000000000000001", rounded: true });
   assert.deepEqual(unitsToCents(5n, 6), { cents: 0n, exact: "0.000005", rounded: true });
   assert.equal(unitsToCents(1234567n, 6).cents, 123n);
-  assert.equal(roundToCents("1017.005"), 201701n);
+  assert.equal(roundToCents("1017.005"), 101701n);
   assert.equal(roundToCents("-0.004"), 0n);
 });
 
