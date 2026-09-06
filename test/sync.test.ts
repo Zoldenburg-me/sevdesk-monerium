@@ -253,3 +253,14 @@ test("Monerium token is fetched once and reused", async () => {
   await d.monerium.authContext();
   assert.equal(mon.tokenGrants - before, 1);
 });
+
+test("orders are read per profile: a second profile's orders are not lost behind the default one", async () => {
+  mon.ibans.push({ iban: "EE12 7310 1381 5551 2606 682602", bic: "LHVBEE22", profile: "p2", address: "0x0000000000000000000000000000000000000002", chain: "gnosis" });
+  mon.orders.push(order({ id: "o-p2", kind: "issue", amount: "9", profile: "p2", address: "0x0000000000000000000000000000000000000002" }));
+  const plan = await planSync(deps(), { createAccounts: true });
+  const p2 = plan.actions.find((a) => a.id === "o-p2");
+  assert.equal(p2?.kind, "create");
+  assert.equal(plan.actions.filter((a) => a.kind === "create").length, 3);
+  const asked = mon.requestedProfiles.slice(-2).sort();
+  assert.deepEqual(asked, ["p1", "p2"]);
+});

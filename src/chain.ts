@@ -23,13 +23,13 @@ export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 export const DEFAULT_RPC_URLS: Record<string, string> = {
   ethereum: "https://ethereum-rpc.publicnode.com",
   gnosis: "https://rpc.gnosischain.com",
-  polygon: "https://polygon-rpc.com",
+  polygon: "https://polygon-bor-rpc.publicnode.com",
   base: "https://mainnet.base.org",
   arbitrum: "https://arb1.arbitrum.io/rpc",
   linea: "https://rpc.linea.build",
-  sepolia: "https://rpc.sepolia.org",
+  sepolia: "https://ethereum-sepolia-rpc.publicnode.com",
   chiado: "https://rpc.chiadochain.net",
-  amoy: "https://rpc-amoy.polygon.technology",
+  amoy: "https://polygon-amoy-bor-rpc.publicnode.com",
   basesepolia: "https://sepolia.base.org",
   arbitrumsepolia: "https://sepolia-rollup.arbitrum.io/rpc",
   lineasepolia: "https://rpc.sepolia.linea.build",
@@ -77,6 +77,7 @@ export class JsonRpc {
   private id = 0;
   private readonly fetch: typeof fetch;
   private blockTimes = new Map<number, number>();
+  private earliest: number | undefined;
 
   constructor(readonly url: string, opts: { fetch?: typeof fetch } = {}) {
     this.fetch = opts.fetch ?? globalThis.fetch;
@@ -117,16 +118,56 @@ export class JsonRpc {
   }
 
   /**
+   * The oldest block this node still serves. Public nodes prune: Base
+   * Sepolia's answers "pruned history unavailable: requested 0, earliest
+   * available 45000000" for anything older. The number is taken from that
+   * message when present, else found by bisection on readability.
+   */
+  async earliestBlock(): Promise<number> {
+    if (this.earliest !== undefined) return this.earliest;
+    try {
+      await this.blockTimestamp(0);
+      this.earliest = 0;
+    } catch (e) {
+      const m = /earliest available (\d+)/i.exec((e as Error).message);
+      if (m) this.earliest = Number(m[1]);
+      else {
+        let lo = 0; // unreadable
+        let hi = await this.headNumber(); // readable
+        await this.blockTimestamp(hi);
+        while (hi - lo > 1) {
+          const mid = Math.floor((lo + hi) / 2);
+          try {
+            await this.blockTimestamp(mid);
+            hi = mid;
+          } catch {
+            lo = mid;
+          }
+        }
+        this.earliest = hi;
+      }
+    }
+    return this.earliest;
+  }
+
+  /** Where readable history begins on this node, as block and time. */
+  async historyStart(): Promise<{ block: number; at: string }> {
+    const block = await this.earliestBlock();
+    return { block, at: new Date((await this.blockTimestamp(block)) * 1000).toISOString() };
+  }
+
+  /**
    * The last block mined at or before `when`: a binary search over block
    * timestamps, about 30 reads on a chain with millions of blocks. Null when
-   * the chain is younger than `when`.
+   * readable history starts after `when`.
    */
   async blockAtOrBefore(when: Date): Promise<number | null> {
     const target = Math.floor(when.getTime() / 1000);
     const head = await this.headNumber();
     if ((await this.blockTimestamp(head)) <= target) return head;
-    if ((await this.blockTimestamp(0)) > target) return null;
-    let lo = 0;
+    const earliest = await this.earliestBlock();
+    if ((await this.blockTimestamp(earliest)) > target) return null;
+    let lo = earliest;
     let hi = head;
     while (hi - lo > 1) {
       const mid = Math.floor((lo + hi) / 2);
@@ -136,10 +177,10 @@ export class JsonRpc {
     return lo;
   }
 
-  /** The first block mined at or after `when`; 0 when the chain is older than `when`. */
+  /** The first block mined at or after `when`, clamped to the start of readable history. */
   async firstBlockAtOrAfter(when: Date): Promise<number> {
     const before = await this.blockAtOrBefore(new Date(when.getTime() - 1000));
-    return before === null ? 0 : before + 1;
+    return before === null ? this.earliestBlock() : before + 1;
   }
 
   /** ERC-20 balance of `owner` in raw units, at the latest block. */

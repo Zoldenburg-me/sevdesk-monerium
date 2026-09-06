@@ -39,8 +39,10 @@ export interface SyncOptions {
   since?: Date;
   /** Only movements before this instant. */
   until?: Date;
-  /** Monerium profile to read; default is the application's own. */
+  /** Monerium profile to read; default: every profile that holds one of the IBANs. */
   profile?: string;
+  /** Only these IBANs (spaces and case ignored). Default: every IBAN the application can see. */
+  ibans?: string[];
   /** Create a sevDesk file-import account for an IBAN that has none. Off by default. */
   createAccounts?: boolean;
   /** Name for accounts we create; `{iban}` is substituted. */
@@ -63,6 +65,8 @@ export interface PlannedAccount {
   name: string;
   /** Present when the chain was scanned for this account. */
   scan?: { fromBlock: number; toBlock: number; token: string; note?: string };
+  /** Set when the node's pruned history cut the requested window short. */
+  historyNote?: string;
 }
 
 export type Source = "order" | "chain";
@@ -139,6 +143,10 @@ async function scanAccount(
       const start = opts.since ?? earliestOrder;
       if (!start) return { transfers: [], token, note: `first on-chain scan of ${acc.address} needs --since (no cursor yet and no processed order to anchor on)` };
       fromBlock = await rpc.firstBlockAtOrAfter(start);
+      const history = await rpc.historyStart();
+      if (history.block > 0 && new Date(history.at).getTime() > start.getTime()) {
+        acc.historyNote = `RPC for ${acc.chain} serves history from block ${history.block} (${history.at.slice(0, 10)}); transfers of ${acc.address} before that are not readable from this node`;
+      }
     }
     let toBlock = safeHead;
     if (opts.until) {
@@ -163,7 +171,12 @@ export async function planSync(deps: SyncDeps, opts: SyncOptions = {}): Promise<
   const { state } = deps;
   const notes: string[] = [];
 
-  const ibans = await deps.monerium.ibans(opts.profile);
+  let ibans = await deps.monerium.ibans(opts.profile);
+  if (opts.ibans?.length) {
+    const want = new Set(opts.ibans.map(normalizeIban));
+    ibans = ibans.filter((i) => want.has(normalizeIban(i.iban)));
+    for (const w of want) if (!ibans.some((i) => normalizeIban(i.iban) === w)) notes.push(`IBAN ${w} is not one Monerium attributes to this application`);
+  }
   const byAddress = new Map<string, MoneriumIban>();
   for (const i of ibans) byAddress.set(i.address.toLowerCase(), i);
 
@@ -180,7 +193,20 @@ export async function planSync(deps: SyncDeps, opts: SyncOptions = {}): Promise<
     }
   }
 
-  const allOrders = await deps.monerium.orders({ profile: opts.profile });
+  // Orders are read PER PROFILE. Unscoped, Monerium answers with the
+  // caller's default profile only, so on an application that serves several
+  // profiles every other profile's orders would silently be missing (found
+  // against the real sandbox: 60 IBANs, one profile's orders).
+  const profiles = opts.profile ? [opts.profile] : [...new Set(ibans.map((i) => i.profile).filter(Boolean))];
+  const allOrders: MoneriumOrder[] = [];
+  const seenOrder = new Set<string>();
+  for (const profile of profiles.length ? profiles : [undefined]) {
+    for (const o of await deps.monerium.orders({ profile })) {
+      if (seenOrder.has(o.id)) continue;
+      seenOrder.add(o.id);
+      allOrders.push(o);
+    }
+  }
   const orders = allOrders.filter((o) => inWindow(orderAt(o), opts));
   orders.sort((a, b) => orderAt(a).localeCompare(orderAt(b)));
   // Every tx hash any order settled through, whatever its window: a mint or
@@ -208,6 +234,7 @@ export async function planSync(deps: SyncDeps, opts: SyncOptions = {}): Promise<
         if (!acc.checkAccountId && !acc.create) continue;
         const r = await scanAccount(deps, acc, opts, tokens, earliestOrder);
         if (r.note) notes.push(r.note);
+        if (acc.historyNote) notes.push(acc.historyNote);
         for (const t of r.transfers) chainRows.push({ acc, t, decimals: r.token!.decimals });
       }
     }
@@ -381,8 +408,12 @@ export interface DriftLine {
  * agree to the cent; the note names the usual causes when they do not.
  * Nothing is repaired.
  */
-export async function checkDrift(deps: SyncDeps, opts: { profile?: string } = {}): Promise<DriftLine[]> {
-  const ibans = await deps.monerium.ibans(opts.profile);
+export async function checkDrift(deps: SyncDeps, opts: { profile?: string; ibans?: string[] } = {}): Promise<DriftLine[]> {
+  let ibans = await deps.monerium.ibans(opts.profile);
+  if (opts.ibans?.length) {
+    const want = new Set(opts.ibans.map(normalizeIban));
+    ibans = ibans.filter((i) => want.has(normalizeIban(i.iban)));
+  }
   const sevAccounts = await deps.sevdesk.checkAccounts();
   const out: DriftLine[] = [];
   for (const i of ibans) {

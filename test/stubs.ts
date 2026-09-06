@@ -30,13 +30,14 @@ export interface MoneriumStub {
   ibans: MoneriumIban[];
   orders: MoneriumOrder[];
   tokens: unknown[];
+  requestedProfiles: string[];
   balances: Record<string, string>; // `${chain}:${address.toLowerCase()}` -> eur amount
   tokenGrants: number;
   close(): Promise<void>;
 }
 
 export async function startMoneriumStub(creds: { clientId: string; clientSecret: string }): Promise<MoneriumStub> {
-  const stub: MoneriumStub = { url: "", ibans: [], orders: [], tokens: [], balances: {}, tokenGrants: 0, close: async () => {} };
+  const stub: MoneriumStub = { url: "", ibans: [], orders: [], tokens: [], requestedProfiles: [], balances: {}, tokenGrants: 0, close: async () => {} };
   const token = "stub-access-token";
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
@@ -56,7 +57,10 @@ export async function startMoneriumStub(creds: { clientId: string; clientSecret:
     if (url.pathname === "/orders") {
       const state = url.searchParams.get("state");
       const address = url.searchParams.get("address");
-      return json(res, 200, { orders: stub.orders.filter((o) => (!state || o.state === state) && (!address || o.address.toLowerCase() === address.toLowerCase())) });
+      // Like Monerium: unscoped answers the DEFAULT profile (p1) only.
+      const profile = url.searchParams.get("profile") ?? "p1";
+      stub.requestedProfiles.push(profile);
+      return json(res, 200, { orders: stub.orders.filter((o) => o.profile === profile && (!state || o.state === state) && (!address || o.address.toLowerCase() === address.toLowerCase())) });
     }
     const m = /^\/balances\/([^/]+)\/([^/]+)$/.exec(url.pathname);
     if (m) {
@@ -177,6 +181,8 @@ export interface RpcStub {
   blockSeconds: number;
   logs: RpcLogFixture[];
   maxRange: number;
+  /** Blocks below this answer like a pruned node. */
+  earliestBlock: number;
   balances: Record<string, bigint>; // `${token}:${owner}` lowercase
   calls: { method: string; params: unknown[] }[];
   close(): Promise<void>;
@@ -186,7 +192,7 @@ const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523
 const pad = (a: string) => `0x${a.toLowerCase().replace(/^0x/, "").padStart(64, "0")}`;
 
 export async function startRpcStub(init: Partial<RpcStub> = {}): Promise<RpcStub> {
-  const stub: RpcStub = { url: "", chainId: 100, head: 20_000, genesisTime: Date.UTC(2026, 7, 1) / 1000, blockSeconds: 5, logs: [], maxRange: 100_000, balances: {}, calls: [], close: async () => {}, ...init };
+  const stub: RpcStub = { url: "", chainId: 100, head: 20_000, genesisTime: Date.UTC(2026, 7, 1) / 1000, blockSeconds: 5, logs: [], maxRange: 100_000, earliestBlock: 0, balances: {}, calls: [], close: async () => {}, ...init };
   const server = createServer(async (req, res) => {
     const { id, method, params = [] } = JSON.parse(await body(req)) as { id: number; method: string; params?: unknown[] };
     stub.calls.push({ method, params });
@@ -202,6 +208,7 @@ export async function startRpcStub(init: Partial<RpcStub> = {}): Promise<RpcStub
         const tag = params[0] as string;
         const n = tag === "latest" ? stub.head : Number(tag);
         if (n > stub.head || n < 0) return reply(null);
+        if (n < stub.earliestBlock) return fail(`pruned history unavailable: requested ${n}, earliest available ${stub.earliestBlock}`, 4444);
         return reply({ number: hex(n), timestamp: hex(stub.genesisTime + n * stub.blockSeconds), hash: `0x${n.toString(16).padStart(64, "0")}` });
       }
       case "eth_call": {

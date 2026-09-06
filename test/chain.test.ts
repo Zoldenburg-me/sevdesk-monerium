@@ -55,6 +55,7 @@ beforeEach(() => {
   ];
   rpc.chainId = 100;
   rpc.maxRange = 100_000;
+  rpc.earliestBlock = 0;
   rpc.head = blockAt("2026-09-05T00:00:00Z");
   rpc.calls = [];
   rpc.logs = [
@@ -210,4 +211,39 @@ test("--no-chain and an unreachable RPC both leave the order source working", as
   const dead = await planSync(deps(SyncState.inMemory(), "http://127.0.0.1:9"), { createAccounts: true, since: new Date("2026-09-01T00:00:00Z") });
   assert.match(dead.notes[0], /on-chain read failed.*RPC unreachable/);
   assert.equal(dead.actions.length, 2);
+});
+
+test("a pruned node: the scan starts where history starts, and says so", async () => {
+  rpc.earliestBlock = blockAt("2026-09-02T00:00:00Z");
+  const j = new JsonRpc(rpc.url);
+  assert.equal(await j.earliestBlock(), rpc.earliestBlock);
+  assert.equal(await j.blockAtOrBefore(new Date("2026-09-01T12:00:00Z")), null);
+  assert.equal(await j.firstBlockAtOrAfter(new Date("2026-09-01T00:00:00Z")), rpc.earliestBlock);
+  assert.equal(await j.blockAtOrBefore(new Date("2026-09-03T00:00:00Z")), blockAt("2026-09-03T00:00:00Z"));
+
+  const state = SyncState.inMemory();
+  const plan = await planSync(deps(state), { createAccounts: true, since: new Date("2026-09-01T00:00:00Z") });
+  assert.equal(plan.accounts[0].scan?.fromBlock, rpc.earliestBlock);
+  assert.match(plan.notes[0], /serves history from block \d+ \(2026-09-02\)/);
+  assert.equal(plan.transfersSeen, 4, "the mint on 09-01 is behind the prune; its order still books");
+  const kinds = Object.fromEntries(plan.actions.map((a) => [a.id, a.kind]));
+  assert.equal(kinds["o-issue"], "create");
+  assert.equal(kinds["gnosis:0xburn1:1"], "covered");
+});
+
+test("a pruned node without the number in its error is bisected to the first readable block", async () => {
+  rpc.earliestBlock = 12_345;
+  const j = new JsonRpc(rpc.url, { fetch: async (url, init) => {
+    const res = await fetch(url, init);
+    const body = await res.text();
+    return new Response(body.replace(/, earliest available \d+/, ""), { status: res.status, headers: { "content-type": "application/json" } });
+  } });
+  assert.equal(await j.earliestBlock(), 12_345);
+});
+
+test("--iban limits the accounts, and an IBAN Monerium does not know is named", async () => {
+  mon.ibans.push({ iban: "EE12 7310 1381 5551 2606 682602", bic: "LHVBEE22", profile: "p1", address: "0x0000000000000000000000000000000000000002", chain: "gnosis" });
+  const plan = await planSync(deps(), { createAccounts: true, chain: false, ibans: ["ee127310138155512606682602", "DE00000000000000000000"] });
+  assert.deepEqual(plan.accounts.map((a) => a.iban), ["EE127310138155512606682602"]);
+  assert.match(plan.notes[0], /DE00000000000000000000 is not one Monerium attributes/);
 });

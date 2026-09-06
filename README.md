@@ -74,6 +74,7 @@ npm run cli -- sync                           # plan only: prints what would be 
 npm run cli -- sync --apply --create-accounts # do it
 npm run cli -- sync --since 2026-09-01 --apply
 npm run cli -- sync --no-chain                # orders only, no RPC needed
+npm run cli -- sync --iban EE12...,DE02...     # only these IBANs (an app serving many profiles)
 npm run cli -- check                          # balance drift per IBAN, reported not repaired
 ```
 
@@ -108,11 +109,22 @@ missing. Two identical payments on one day stay two rows (tested).
 Shapes come from the two published OpenAPI documents, not from memory:
 sevDesk's at `https://api.sevdesk.de/openapi.yaml`, Monerium's at
 `https://docs.monerium.com/redocusaurus/api.yaml`. The tests
-(`npm test`, 22 checks) run the clients against in-process stubs that enforce
+(`npm test`, 26 checks) run the clients against in-process stubs that enforce
 the auth each API demands, plus a JSON-RPC stub with a block-range cap.
 
-**No call has been made to the real sevDesk API or a real Monerium
-account.** In particular, untested until one run against each:
+**Proven against the Monerium sandbox and the public Base Sepolia RPC**
+(2026-09-06, sandbox application with 60 IBANs across many profiles):
+`auth`, `accounts`, `sync` and `check` all ran live. Two IBANs were mirrored
+into a stub sevDesk: one processed SEPA order each, plus three plain EURe
+transfers found on chain, with the mint and burn legs of both orders folded
+onto them. `check` then agreed with Monerium's live balances to the cent
+(72.01 and 2,429,000 EUR). Two things that run found and the code now
+handles: Monerium's `/orders` unscoped returns the DEFAULT profile only, so
+orders are read per profile of each IBAN; and Base Sepolia's public node
+prunes history (block 45,000,000 onward), so the block search starts where
+history starts and says so.
+
+**No call has been made to the real sevDesk API.** Untested until one run:
 
 - whether sevDesk accepts an RFC3339 `Z` timestamp in `valueDate` (their
   examples show `+02:00` offsets);
@@ -120,16 +132,18 @@ account.** In particular, untested until one run against each:
   put in `paymtPurpose`;
 - the `accountingNumber` a created file-import account is given by default
   (SKR03 1200 / SKR04 1800 — set it explicitly if the default is wrong);
-- Monerium's `/orders` on a private application: the docs say it answers
-  with the caller's default profile and document no pagination;
+- Monerium's `/orders` pagination: none is documented and none was hit (the
+  largest profile seen had 19 orders);
 - that Monerium's `meta.txHashes` on a processed order names the mint/burn
   transaction the way the fold assumes, on every chain (it is documented so;
   no real order has been checked). An order whose burn is not in its
   `txHashes` would show up as an orphan burn, reported and not booked, so the
   failure mode is a visible skip rather than a duplicate;
-- the public RPC defaults: chosen from each chain's published endpoints, not
-  exercised; expect to set `RPC_URL_<CHAIN>` to a provider with a key for
-  anything beyond a trial.
+- the public RPC defaults: each answered `eth_chainId` correctly on
+  2026-09-06 and Base Sepolia's served a 1.47M-block scan in under a minute;
+  expect to set `RPC_URL_<CHAIN>` to a provider with a key for anything
+  beyond a trial, and to a node with full history when the window predates
+  what the public one keeps.
 
 ## Layout
 

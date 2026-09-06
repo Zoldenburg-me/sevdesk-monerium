@@ -4,7 +4,7 @@
  *
  *   auth                      verify both credentials, print what each sees
  *   accounts                  Monerium IBANs beside sevDesk check accounts
- *   sync [--since D] [--until D] [--apply] [--create-accounts] [--no-chain]
+ *   sync [--since D] [--until D] [--apply] [--create-accounts] [--no-chain] [--iban X,Y]
  *                             plan (default) or apply the mirror; reads
  *                             Monerium orders AND on-chain EURe transfers
  *   check                     balance drift per IBAN, reported not repaired
@@ -84,7 +84,7 @@ async function main() {
   loadEnv();
   const { command, flags } = parseArgs(process.argv.slice(2));
   if (!command || flags.help) {
-    console.log("usage: sevdesk-monerium <auth|accounts|sync|check> [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--apply] [--create-accounts] [--no-chain] [--confirmations N] [--profile ID]");
+    console.log("usage: sevdesk-monerium <auth|accounts|sync|check> [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--apply] [--create-accounts] [--no-chain] [--iban EE..,EE..] [--confirmations N] [--profile ID]");
     process.exit(flags.help ? 0 : 2);
   }
 
@@ -126,6 +126,7 @@ async function main() {
         createAccounts: flags["create-accounts"] === true,
         accountName: typeof flags["account-name"] === "string" ? flags["account-name"] : undefined,
         chain: flags["no-chain"] !== true,
+        ibans: typeof flags.iban === "string" ? flags.iban.split(",").map((x) => x.trim()).filter(Boolean) : undefined,
         confirmations: typeof flags.confirmations === "string" ? Number(flags.confirmations) : Number(process.env.CHAIN_CONFIRMATIONS || 12),
         maxBlockSpan: Number(process.env.CHAIN_MAX_BLOCK_SPAN || 5000),
       });
@@ -139,7 +140,7 @@ async function main() {
       return;
     }
     case "check": {
-      const lines = await checkDrift(deps, { profile });
+      const lines = await checkDrift(deps, { profile, ibans: typeof flags.iban === "string" ? flags.iban.split(",").map((x) => x.trim()).filter(Boolean) : undefined });
       for (const l of lines) {
         console.log(`${l.iban}  Monerium ${l.moneriumBalance ?? "?"} EUR  sevDesk ${l.sevdeskSum ?? "?"} EUR  delta ${l.deltaCents === null ? "?" : formatCents(l.deltaCents)}  — ${l.note}`);
       }
