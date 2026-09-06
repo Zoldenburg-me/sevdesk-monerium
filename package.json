@@ -1,0 +1,20 @@
+{
+  "name": "sevdesk-monerium",
+  "version": "0.1.0",
+  "description": "Mirror a Monerium account's SEPA activity into a sevDesk bank account. One direction, read-only on Monerium, nothing booked.",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "check": "npm run typecheck && npm test",
+    "cli": "tsx src/cli.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.11",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,8 @@
+node_modules
+.DS_Store
+
+# secrets and local sync state: never commit
+.env
+.env.*
+!.env.example
+state/
